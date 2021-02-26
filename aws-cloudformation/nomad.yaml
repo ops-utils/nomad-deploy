@@ -1,0 +1,218 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'HashiCorp Nomad Cluster'
+
+Parameters:
+  ClusterName:
+    Description: Easily-identifiable name for your cluster. Defaults to 'nomad'.
+    Type: String
+    Default: 'nomad'
+  InstanceType:
+    Description: EC2 instance type for all nodes
+    Type: String
+    Default: t3a.small
+  ServerAmiId:
+    Description: AMI ID of the Server node(s)
+    Type: AWS::EC2::Image::Id
+  ClientAmiId:
+    Description: AMI ID of the Client node(s)
+    Type: AWS::EC2::Image::Id
+  ClientNodeCount:
+    Description: How many client nodes to deploy to the cluster. Defaults to 1.
+    Type: Number
+    Default: 1
+
+
+Resources:
+
+  #################
+  # EC2 Resources #
+  #################
+  Server:
+    Type: AWS::EC2::Instance
+    Properties: 
+      ImageId: !Ref ServerAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref NomadInstanceProfile
+      SecurityGroupIds:
+        - !Ref ServerSG
+      SubnetId: { Fn::ImportValue: !Sub '${ClusterName}-vpc-PrivateSubnet1Id' }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/usr/bin/env bash
+          export cluster_name="${ClusterName}"
+          bash /root/scripts/init-server-aws.sh
+      Tags:
+        - Key:   'Name'
+          Value: !Sub '${ClusterName}-server'
+  
+  ClientLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: nomad-client-lt
+      LaunchTemplateData:
+        ImageId: !Ref ClientAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Name: !Ref NomadInstanceProfile
+        SecurityGroupIds:
+          - !Ref ClientSG
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/usr/bin/env bash
+              export cluster_name="${ClusterName}"
+              bash /root/scripts/init-client-aws.sh
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key:   'Name'
+                Value: !Sub '${ClusterName}-client'
+
+  ClientASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: Server
+    Properties:
+      AutoScalingGroupName: nomad-client-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ClientLaunchTemplate
+        Version: !GetAtt ClientLaunchTemplate.LatestVersionNumber
+      Cooldown: '10'
+      # Currently all pegged as the same value, for now
+      DesiredCapacity: !Ref ClientNodeCount
+      MinSize: !Ref ClientNodeCount
+      MaxSize: !Ref ClientNodeCount
+      VPCZoneIdentifier:
+        - { Fn::ImportValue: !Sub '${ClusterName}-vpc-PrivateSubnet1Id' }
+        - { Fn::ImportValue: !Sub '${ClusterName}-vpc-PrivateSubnet2Id' }
+
+  ServerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'SG for Nomad Server nodes'
+      VpcId: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcId' }
+      SecurityGroupIngress:
+        - Description: ICMP ping
+          IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: etcd
+          IpProtocol: tcp
+          FromPort: 2379
+          ToPort: 2380
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: kube-apiserver
+          IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: Flannel VXLAN
+          IpProtocol: udp
+          FromPort: 8472
+          ToPort: 8472
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: Kubelet metrics
+          IpProtocol: tcp
+          FromPort: 10250
+          ToPort: 10252
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        
+  ClientSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'SG for Nomad Client nodes'
+      VpcId: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcId' }
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: kube-apiserver
+          IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: Flannel VXLAN
+          IpProtocol: udp
+          FromPort: 8472
+          ToPort: 8472
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: Kubelet metrics
+          IpProtocol: tcp
+          FromPort: 10250
+          ToPort: 10250
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+        - Description: Node ports
+          IpProtocol: tcp
+          FromPort: 30000
+          ToPort: 32767
+          CidrIp: { Fn::ImportValue: !Sub '${ClusterName}-vpc-VpcCidr' }
+
+
+  #######
+  # IAM #
+  #######
+  NomadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'ec2.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - 'arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess'
+      Policies:
+        - PolicyName: !Sub 'NomadPolicy-${ClusterName}'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 's3:Head*'
+                  - 's3:List*'
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource: !Sub 'arn:aws:s3:::${ClusterName}-${AWS::AccountId}/*'
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:*'
+                Resource: !Sub '${LogGroup.Arn}'
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:*'
+                Resource: !Sub '${LogGroup.Arn}/*'
+  
+  NomadInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref NomadRole
+
+
+  ###########
+  # Logging #
+  ###########
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub '/aws/ec2/nomad/${ClusterName}'
+      RetentionInDays: 7
+  LogStreamServer:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref LogGroup
+      LogStreamName: 'server'
+  LogStreamClients:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref LogGroup
+      LogStreamName: 'clients'
