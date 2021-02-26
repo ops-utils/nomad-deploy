@@ -50,13 +50,13 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet1Cidr
-      MapPublicIpOnLaunch: 'true'
+      MapPublicIpOnLaunch: true
   PublicSubnet2:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet2Cidr
-      MapPublicIpOnLaunch: 'true'
+      MapPublicIpOnLaunch: true
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
