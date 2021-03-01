@@ -143,10 +143,16 @@
       "destination": "/tmp"
     },
     {
+      "type": "file",
+      "source": "./jobs",
+      "destination": "/tmp"
+    },
+    {
       "type": "shell",
       "execute_command": "echo 'nomad' | sudo -S bash -euo pipefail -c '{{ .Vars }} {{ .Path }}'",
       "inline": [
-        "cp -r /tmp/scripts /root/scripts"
+        "cp -r /tmp/scripts /root/scripts",
+        "cp -r /tmp/jobs /root/jobs"
       ]
     },
     {
