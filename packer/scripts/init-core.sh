@@ -25,7 +25,7 @@ init-sys-packages() {
     ca-certificates \
     curl \
     dnsutils \
-    gnupg-client \
+    gnupg \
     htop \
     jq \
     nmap \
